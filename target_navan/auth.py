@@ -1,99 +1,92 @@
+"""Navan OAuth authenticator (client_credentials)."""
+
+from __future__ import annotations
+
 import json
 from datetime import datetime
-from typing import Optional
-from base64 import b64encode
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-import logging
 import requests
 
+from target_hotglue.auth import Authenticator
 
-class navanAuthenticator:
-    """API Authenticator for OAuth 2.0 flows."""
+
+NAVAN_TOKEN_URL = "https://app.navan.com/ta-auth/oauth/token"
+
+
+class NavanAuthenticator(Authenticator):
+    """Obtain Bearer tokens for the Navan Expense API.
+
+    Navan apps use the OAuth2 client_credentials grant (same as tap-navan).
+    Tokens are cached on the target config and refreshed ~2 minutes before expiry.
+    """
+
     def __init__(
         self,
         target,
-        state,
-        auth_endpoint: Optional[str] = None,
+        state: Optional[dict] = None,
+        auth_endpoint: str = NAVAN_TOKEN_URL,
     ) -> None:
-        """Init authenticator.
-
-        Args:
-            stream: A stream for a RESTful endpoint.
-        """
-        self.target_name: str = target.name
-        self._config: Dict[str, Any] = target._config
-        self._auth_headers: Dict[str, Any] = {}
-        self._auth_params: Dict[str, Any] = {}
-        self.logger: logging.Logger = target.logger
+        super().__init__(target, state or {})
         self._auth_endpoint = auth_endpoint
-        self._config_file = target.config_file
-        self._target = target
-        self.state = state
 
     @property
     def auth_headers(self) -> dict:
         if not self.is_token_valid():
             self.update_access_token()
-        result = {}
-        result["Authorization"] = f"Bearer {self._config.get('access_token')}"
-        return result
+        return {"Authorization": f"Bearer {self._config.get('access_token')}"}
 
     @property
     def oauth_request_body(self) -> dict:
-        """Define the OAuth request body."""
+        """Build the client_credentials token request body."""
         return {
-            "refresh_token": self._config["refresh_token"],
-            "grant_type": "refresh_token",
+            "grant_type": "client_credentials",
             "client_id": self._config["client_id"],
             "client_secret": self._config["client_secret"],
         }
 
     def is_token_valid(self) -> bool:
         access_token = self._config.get("access_token")
-        now = round(datetime.utcnow().timestamp())
         expires_in = self._config.get("expires_in")
-        if  expires_in is not None:
-            expires_in = int(expires_in)
-        if not access_token:
+        if not access_token or expires_in is None:
             return False
-
-        if not expires_in:
-            return False
-
-        return not ((expires_in - now) < 120)
+        now = round(datetime.utcnow().timestamp())
+        return not ((int(expires_in) - now) < 120)
 
     def update_access_token(self) -> None:
+        """Fetch a new access token and persist it on the target config file."""
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        self.logger.info(f"Oauth request - endpoint: {self._auth_endpoint}, body: {self.oauth_request_body}")
-        token_response = requests.post(
-            self._auth_endpoint, data=self.oauth_request_body, headers=headers
+        self.logger.info(
+            "Oauth request - endpoint: %s, grant_type: client_credentials",
+            self._auth_endpoint,
         )
-
-        if (
-            token_response.json().get("error_description")
-            == "Rate limit exceeded: access_token not expired"
-        ):
-            return None
-
+        token_response = requests.post(
+            self._auth_endpoint,
+            data=self.oauth_request_body,
+            headers=headers,
+        )
         try:
             token_response.raise_for_status()
             self.logger.info("OAuth authorization attempt was successful.")
         except Exception as ex:
-            self.state.update({"auth_error_response": token_response.json()})
+            body: Any
+            try:
+                body = token_response.json()
+            except Exception:
+                body = token_response.text
+            self.state.update({"auth_error_response": body})
             raise RuntimeError(
-                f"Failed OAuth login, response was '{token_response.json()}'. {ex}"
-            )
+                f"Failed OAuth login, response was '{body}'. {ex}"
+            ) from ex
+
         token_json = token_response.json()
-        #Log the refresh_token
-        self.logger.info(f"Latest refresh token: {token_json['refresh_token']}")
-
-        self.access_token = token_json["access_token"]
-
-        self._config["access_token"] = token_json["access_token"]
-        self._config["refresh_token"] = token_json["refresh_token"]
         now = round(datetime.utcnow().timestamp())
+        self._config["access_token"] = token_json["access_token"]
         self._config["expires_in"] = int(token_json["expires_in"]) + now
 
-        with open(self._target.config_file, "w") as outfile:
-            json.dump(self._config, outfile, indent=4)
+        config_path = getattr(self._target, "_config_file_path", None) or getattr(
+            self._target, "config_file", None
+        )
+        if config_path:
+            with open(config_path, "w") as outfile:
+                json.dump(self._config, outfile, indent=4)
