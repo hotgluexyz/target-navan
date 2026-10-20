@@ -45,4 +45,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 # CLI declaration
-target-navan = 'target_navan.target:Targetnavan.cli'
+target-navan = 'target_navan.target:TargetNavan.cli'
