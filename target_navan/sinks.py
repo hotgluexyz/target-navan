@@ -164,8 +164,6 @@ class CustomFieldOptionsSink(NavanBatchSink):
             for start in range(0, len(field_records), _OPTIONS_CHUNK_SIZE):
                 chunk = field_records[start : start + _OPTIONS_CHUNK_SIZE]
                 self._submit_options_chunk(field_name, chunk, existing)
-                for record in chunk:
-                    existing[record["value"]] = record["display_value"]
 
     def _list_existing_options(self, field_name: str) -> dict[str, str]:
         """Return ``{value: display_value}`` for options already on the field."""
@@ -253,33 +251,77 @@ class CustomFieldOptionsSink(NavanBatchSink):
             )
 
         job = self._poll_options_job(job_id)
-        self._raise_for_job_errors(field_name, job)
+        self._record_submitted_options_state(
+            field_name, to_submit, existing, job
+        )
 
-        for record in to_submit:
+    def _record_submitted_options_state(
+        self,
+        field_name: str,
+        records: list[dict],
+        existing: dict[str, str],
+        job: dict,
+    ) -> None:
+        """Write per-record state from a finished Navan options job."""
+        status = job.get("status")
+        failed_by_index = {
+            error["operation_index"]: error
+            for error in (job.get("errors") or [])
+            if "operation_index" in error
+        }
+
+        for index, record in enumerate(records):
+            error = failed_by_index.get(index)
+            if error is not None:
+                self._record_option_state(
+                    field_name,
+                    record,
+                    success=False,
+                    error=error.get("error_message"),
+                )
+                continue
+
+            if status == "FAILED":
+                self._record_option_state(
+                    field_name,
+                    record,
+                    success=False,
+                    error=(
+                        f"Navan custom-field options job FAILED for "
+                        f"'{field_name}'"
+                    ),
+                )
+                continue
+
             if record["value"] in existing:
                 self._record_option_state(
                     field_name, record, is_updated=True
                 )
             else:
                 self._record_option_state(field_name, record)
+            existing[record["value"]] = record["display_value"]
 
     def _record_option_state(
         self,
         field_name: str,
         record: dict,
         *,
+        success: bool = True,
         is_duplicate: bool = False,
         is_updated: bool = False,
+        error: str | None = None,
     ) -> None:
         """Write one export-state row for a custom-field option."""
         state = {
             "hash": self.build_record_hash(record),
-            "success": True,
+            "success": success,
             "id": f"{field_name}:{record['value']}",
             "externalId": record["value"],
         }
         if is_updated:
             state["is_updated"] = True
+        if error is not None:
+            state["error"] = error
         self.update_state(
             state, is_duplicate=is_duplicate, record=record
         )
@@ -333,15 +375,3 @@ class CustomFieldOptionsSink(NavanBatchSink):
             f"Timed out polling Navan custom-field job {job_id} after "
             f"{_OPTIONS_POLL_MAX_ATTEMPTS} attempts"
         )
-
-    def _raise_for_job_errors(self, field_name: str, job: dict) -> None:
-        """Raise when the Navan job failed or reported failed operations."""
-        status = job.get("status")
-        failed = int(job.get("failed_operations") or 0)
-        errors = job.get("errors") or []
-
-        if status == "FAILED" or failed > 0 or status == "COMPLETED_WITH_ERRORS":
-            raise RuntimeError(
-                f"Navan custom-field options job failed for '{field_name}': "
-                f"status={status}, failed_operations={failed}, errors={errors}"
-            )
