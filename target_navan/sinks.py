@@ -203,8 +203,41 @@ class CustomFieldOptionsSink(NavanBatchSink):
         records: list[dict],
         existing: dict[str, str],
     ) -> None:
-        """Submit one options chunk, poll the job, and write per-record state."""
-        response = self.make_batch_request(records)
+        """Skip unchanged options; POST new/updated ones and write per-record state."""
+        to_skip: list[dict] = []
+        to_submit: list[dict] = []
+        for record in records:
+            prior_display = existing.get(record["value"])
+            if (
+                prior_display is not None
+                and prior_display == record["display_value"]
+            ):
+                to_skip.append(record)
+            else:
+                to_submit.append(record)
+
+        for record in to_skip:
+            self._record_option_state(
+                field_name, record, is_duplicate=True
+            )
+
+        if not to_submit:
+            self.logger.info(
+                "Skipping Navan options POST for field '%s': "
+                "all %s option(s) already exist unchanged",
+                field_name,
+                len(to_skip),
+            )
+            return
+
+        self.logger.info(
+            "Submitting %s option(s) for field '%s' "
+            "(%s unchanged skipped)",
+            len(to_submit),
+            field_name,
+            len(to_skip),
+        )
+        response = self.make_batch_request(to_submit)
 
         if response.status_code not in (200, 202):
             raise RuntimeError(
@@ -221,36 +254,35 @@ class CustomFieldOptionsSink(NavanBatchSink):
 
         job = self._poll_options_job(job_id)
         self._raise_for_job_errors(field_name, job)
-        self._record_chunk_state(field_name, records, existing, job_id)
 
-    def _record_chunk_state(
+        for record in to_submit:
+            if record["value"] in existing:
+                self._record_option_state(
+                    field_name, record, is_updated=True
+                )
+            else:
+                self._record_option_state(field_name, record)
+
+    def _record_option_state(
         self,
         field_name: str,
-        records: list[dict],
-        existing: dict[str, str],
-        job_id: str,
+        record: dict,
+        *,
+        is_duplicate: bool = False,
+        is_updated: bool = False,
     ) -> None:
-        """Write export state; mark pre-existing values as existing/updated."""
-        for record in records:
-            state = {
-                "hash": self.build_record_hash(record),
-                "success": True,
-                "id": f"{field_name}:{record['value']}",
-                "job_id": job_id,
-                "field_name": field_name,
-                "value": record["value"],
-                "display_value": record["display_value"],
-            }
-            prior_display = existing.get(record["value"])
-            if prior_display is None:
-                self.update_state(state, record=record)
-                continue
-
-            if prior_display == record["display_value"]:
-                self.update_state(state, is_duplicate=True, record=record)
-            else:
-                state["is_updated"] = True
-                self.update_state(state, record=record)
+        """Write one export-state row for a custom-field option."""
+        state = {
+            "hash": self.build_record_hash(record),
+            "success": True,
+            "id": f"{field_name}:{record['value']}",
+            "externalId": record["value"],
+        }
+        if is_updated:
+            state["is_updated"] = True
+        self.update_state(
+            state, is_duplicate=is_duplicate, record=record
+        )
 
     def _extract_job_id(self, response) -> str | None:
         """Read ``job_id`` from the POST body or ``Location`` header."""
