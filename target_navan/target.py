@@ -5,11 +5,11 @@ from __future__ import annotations
 from singer_sdk import typing as th
 from target_hotglue.target import TargetHotglue
 
-from target_navan.sinks import TransactionsSyncSink
+from target_navan.sinks import CustomFieldOptionsSink, TransactionsSyncSink
 
 
 class TargetNavan(TargetHotglue):
-    """Write sync-status updates back to Navan expense transactions."""
+    """Write sync-status updates and custom-field options back to Navan."""
 
     name = "target-navan"
     MAX_PARALLELISM = 1
@@ -35,9 +35,10 @@ class TargetNavan(TargetHotglue):
         ),
     ).to_dict()
 
-    SINK_TYPES = [TransactionsSyncSink]
+    SINK_TYPES = [TransactionsSyncSink, CustomFieldOptionsSink]
 
     def get_sink_class(self, stream_name: str):
+        """Return the sink class registered for ``stream_name``."""
         for sink_class in self.SINK_TYPES:
             if sink_class.name == stream_name:
                 return sink_class
