@@ -31,6 +31,7 @@ _OPTIONS_TERMINAL_STATUSES = frozenset(
     {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"}
 )
 _OPTIONS_CHUNK_SIZE = 5000
+_OPTIONS_LIST_PAGE_SIZE = 100
 _OPTIONS_POLL_INITIAL_SECONDS = 1.0
 _OPTIONS_POLL_MAX_SECONDS = 30.0
 _OPTIONS_POLL_MAX_ATTEMPTS = 60
@@ -159,11 +160,49 @@ class CustomFieldOptionsSink(NavanBatchSink):
             by_field[record["field_name"]].append(record)
 
         for field_name, field_records in by_field.items():
+            existing = self._list_existing_options(field_name)
             for start in range(0, len(field_records), _OPTIONS_CHUNK_SIZE):
                 chunk = field_records[start : start + _OPTIONS_CHUNK_SIZE]
-                self._submit_options_chunk(field_name, chunk)
+                self._submit_options_chunk(field_name, chunk, existing)
+                for record in chunk:
+                    existing[record["value"]] = record["display_value"]
 
-    def _submit_options_chunk(self, field_name: str, records: list[dict]) -> None:
+    def _list_existing_options(self, field_name: str) -> dict[str, str]:
+        """Return ``{value: display_value}`` for options already on the field."""
+        endpoint = f"/expense/custom-fields/{field_name}/options"
+        existing: dict[str, str] = {}
+        page = 0
+
+        while True:
+            response = self.request_api(
+                "GET",
+                endpoint=endpoint,
+                params={"page": page, "page_size": _OPTIONS_LIST_PAGE_SIZE},
+            )
+            body = response.json()
+            for option in body.get("options") or []:
+                value = option.get("value")
+                if value:
+                    existing[str(value)] = option.get("display_value") or str(value)
+
+            total_pages = int(body.get("total_pages") or 1)
+            page += 1
+            if page >= total_pages:
+                break
+
+        self.logger.info(
+            "Found %s existing option(s) for Navan field '%s'",
+            len(existing),
+            field_name,
+        )
+        return existing
+
+    def _submit_options_chunk(
+        self,
+        field_name: str,
+        records: list[dict],
+        existing: dict[str, str],
+    ) -> None:
         """Submit one options chunk, poll the job, and write per-record state."""
         response = self.make_batch_request(records)
 
@@ -182,20 +221,36 @@ class CustomFieldOptionsSink(NavanBatchSink):
 
         job = self._poll_options_job(job_id)
         self._raise_for_job_errors(field_name, job)
+        self._record_chunk_state(field_name, records, existing, job_id)
 
+    def _record_chunk_state(
+        self,
+        field_name: str,
+        records: list[dict],
+        existing: dict[str, str],
+        job_id: str,
+    ) -> None:
+        """Write export state; mark pre-existing values as existing/updated."""
         for record in records:
-            self.update_state(
-                {
-                    "hash": self.build_record_hash(record),
-                    "success": True,
-                    "id": f"{field_name}:{record['value']}",
-                    "job_id": job_id,
-                    "field_name": field_name,
-                    "value": record["value"],
-                    "display_value": record["display_value"],
-                },
-                record=record,
-            )
+            state = {
+                "hash": self.build_record_hash(record),
+                "success": True,
+                "id": f"{field_name}:{record['value']}",
+                "job_id": job_id,
+                "field_name": field_name,
+                "value": record["value"],
+                "display_value": record["display_value"],
+            }
+            prior_display = existing.get(record["value"])
+            if prior_display is None:
+                self.update_state(state, record=record)
+                continue
+
+            if prior_display == record["display_value"]:
+                self.update_state(state, is_duplicate=True, record=record)
+            else:
+                state["is_updated"] = True
+                self.update_state(state, record=record)
 
     def _extract_job_id(self, response) -> str | None:
         """Read ``job_id`` from the POST body or ``Location`` header."""
@@ -230,6 +285,14 @@ class CustomFieldOptionsSink(NavanBatchSink):
                 _OPTIONS_POLL_MAX_ATTEMPTS,
             )
             if status in _OPTIONS_TERMINAL_STATUSES:
+                self.logger.info(
+                    "Navan custom-field job %s finished: total=%s succeeded=%s "
+                    "failed=%s",
+                    job_id,
+                    job.get("total_operations"),
+                    job.get("succeeded_operations"),
+                    job.get("failed_operations"),
+                )
                 return job
             time.sleep(delay)
             delay = min(delay * 2, _OPTIONS_POLL_MAX_SECONDS)
