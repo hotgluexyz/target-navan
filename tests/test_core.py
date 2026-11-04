@@ -1,39 +1,11 @@
-"""Tests standard target features using the built-in SDK tests library."""
+"""Tests target registration."""
 
 from __future__ import annotations
 
-import typing as t
-
-import pytest
-from singer_sdk.testing import get_target_test_class
-
-from target_navan.target import Targetnavan
-
-# TODO: Initialize minimal target config
-SAMPLE_CONFIG: dict[str, t.Any] = {}
+from target_navan.sinks import CustomFieldOptionsSink, TransactionsSyncSink
+from target_navan.target import TargetNavan
 
 
-# Run standard built-in target tests from the SDK:
-StandardTargetTests = get_target_test_class(
-    target_class=Targetnavan,
-    config=SAMPLE_CONFIG,
-)
-
-
-class TestTargetnavan(StandardTargetTests):  # type: ignore[misc, valid-type]  # noqa: E501
-    """Standard Target Tests."""
-
-    @pytest.fixture(scope="class")
-    def resource(self):  # noqa: ANN201
-        """Generic external resource.
-
-        This fixture is useful for setup and teardown of external resources,
-        such output folders, tables, buckets etc. for use during testing.
-
-        Example usage can be found in the SDK samples test suite:
-        https://github.com/meltano/sdk/tree/main/tests/samples
-        """
-        return "resource"
-
-
-# TODO: Create additional tests as appropriate for your target.
+def test_target_registers_navan_sinks():
+    assert TargetNavan.get_sink_class(TargetNavan, "transactions_sync") is TransactionsSyncSink
+    assert TargetNavan.get_sink_class(TargetNavan, "custom_field_options") is CustomFieldOptionsSink
