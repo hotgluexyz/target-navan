@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "target-navan"
 version = "0.0.1"
-description = "`target-navan` is a Singer target for navan, built with the Meltano Singer SDK."
+description = "`target-navan` is a Singer target for navan, built with the Hotglue Singer SDK."
 readme = "README.md"
 authors = ["Jacob Mazurkiewicz <jacob@hotglue.io>"]
 keywords = [
@@ -12,7 +12,7 @@ license = "Apache-2.0"
 
 [tool.poetry.dependencies]
 python = "<3.12,>=3.7.1"
-target-hotglue = {git = "https://gitlab.com/hotglue/target-hotglue-sdk.git"}
+hotglue-singer-sdk = "^1.0.52"
 requests = "^2.31.0"
 
 [tool.poetry.dev-dependencies]

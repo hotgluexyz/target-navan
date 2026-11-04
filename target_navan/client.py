@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 
-from target_hotglue.client import HotglueBatchSink, HotglueSink
-from target_hotglue.common import HGJSONEncoder
+from hotglue_singer_sdk.target_sdk.client import HotglueBatchSink, HotglueSink
+from hotglue_singer_sdk.target_sdk.common import HGJSONEncoder
 
 from target_navan.auth import NAVAN_TOKEN_URL, NavanAuthenticator
 

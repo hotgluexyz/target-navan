@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import requests
 
-from target_hotglue.auth import Authenticator
+from hotglue_singer_sdk.target_sdk.auth import Authenticator
 
 
 NAVAN_TOKEN_URL = "https://app.navan.com/ta-auth/oauth/token"
